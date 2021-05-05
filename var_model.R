@@ -23,7 +23,7 @@ library(CEoptim)
 
 var.iter.est=function(X.big, Y.vec, k,
                       l1.seq, l2.seq,
-                      std1=F, criteria='BIC2',
+                      std1=F, criteria='BIC2', scaling=c(T, T),
                       decomposition='eigen',
                       conv.beta=10^-2, conv.sigma=10^-1,
                       max.iter=10, me.object=NA, verbose=F, 
@@ -73,13 +73,7 @@ var.iter.est=function(X.big, Y.vec, k,
   
   l1.table=rep(NA, max.iter)
 
-  
-  # step(0):  Re-processing the meboot sample start ###
-  if(criteria=='BIC2-2'){
-    Y.vec.me = c(me.object$Y.vec)
-    X.big.me = kronecker(diag(k), me.object$X.block)
-    Y.vec = Y.vec.me
-  }
+
   # step(1)
   fit.beta<-glmnet(x = X.big, y = Y.vec, family = 'gaussian', alpha = alpha,
                    lambda =l1.seq, standardize = T, intercept = T, 
@@ -87,36 +81,44 @@ var.iter.est=function(X.big, Y.vec, k,
   
   fit.beta$beta = fit.beta$beta[, length(l1.seq):1]
 
-  # Log the IC and validation error picked
-  if (criteria == "BIC1"){
-    l1.choice = var_BIC1(Y.vec, X.big, fit.beta$beta, k, NULL)
-    l1.table[iter] = which.min(l1.choice)
-  }
-  else if (criteria == "BIC2"){
-    l1.choice = var_BIC2(Y.vec, X.big, fit.beta$beta, k)
-    l1.table[iter] = which.min(l1.choice)
-  }
-  else if (criteria == "BIC3"){
-    l1.choice = var_BIC3(Y.vec, X.big, fit.beta$beta, k)
-    l1.table[iter] = which.min(l1.choice)
-  }
-  else if (criteria == "MEBOOT"){
+  # Theta selection
+  if(criteria=='MEBOOT'){
     l1.choice = var_meboot(me.object$Y.vec, me.object$X.block, fit.beta$beta, k)
-    #l1.table[iter] = which.min(l1.choice)
-    l1.table[iter] = std1.opt(l1.choice, 'right', 1)
+    l1.opt = std1.opt(l1.choice, 'right', 1)
+    l1.table[iter] = l1.opt
+  }else{
+    l1.choice = var_theta(Y.vec, X.big, fit.beta$beta, k, criteria, scaling[1])
+    l1.opt = which.min(l1.choice)
+    l1.table[iter] = l1.opt
   }
-  l1.opt = l1.table[iter]
+  
+  # if (criteria == "BIC1"){
+  #   l1.choice = var_BIC1(Y.vec, X.big, fit.beta$beta, k, NULL, F)
+  #   l1.table[iter] = which.min(l1.choice)
+  # }
+  # else if (criteria == "BIC1S"){
+  #   l1.choice = var_BIC1(Y.vec, X.big, fit.beta$beta, k, NULL, T)
+  #   l1.table[iter] = which.min(l1.choice)
+  # }
+  # else if (criteria == "BIC2"){
+  #   l1.choice = var_BIC2(Y.vec, X.big, fit.beta$beta, k)
+  #   l1.table[iter] = which.min(l1.choice)
+  # }
+  # else if (criteria == "BIC3"){
+  #   l1.choice = var_BIC3(Y.vec, X.big, fit.beta$beta, k)
+  #   l1.table[iter] = which.min(l1.choice)
+  # }
+
   
   # step(2)
   beta.first = beta.init = beta.best = fit.beta$beta[, l1.opt]
-  
   residual.matrix = matrix(Y.vec - X.big %*% beta.best, ncol=k)
   sigma.sample <- (1/n) * t(residual.matrix) %*% (residual.matrix)
   
   # step(3)
-  l2.choice=var_omega(sigma.sample, l2.seq, n)
-  fit.omega = glasso(s=sigma.sample, nobs=n, 
-                     rho=l2.seq[which.min(l2.choice)], penalize.diagonal=F)
+  l2.choice=var_omega(sigma.sample, l2.seq, n, scaling[2])
+  l2.opt = which.min(l2.choice)
+  fit.omega = glasso(s=sigma.sample, nobs=n, rho=l2.seq[l2.opt], penalize.diagonal=F)
   sigma.first = sigma.init = sigma.best = fit.omega$w
   omega.init = omega.best = fit.omega$wi
   
@@ -124,7 +126,7 @@ var.iter.est=function(X.big, Y.vec, k,
   if(verbose){
     cat("iter:", iter, 
         " l1.opt:", l1.seq[l1.opt],
-        " l2.opt:", l2.seq[which.min(l2.choice)], 
+        " l2.opt:", l2.seq[l2.opt], 
         " sparsity:", sum(beta.best!=0)/length(beta.best), 
         " diff.beta:", diff.beta, "\n")
   }
@@ -155,36 +157,26 @@ var.iter.est=function(X.big, Y.vec, k,
     
     fit.beta$beta = fit.beta$beta[, length(l1.seq):1]
     
-    # Log the IC and validation error picked
-    if (criteria == "BIC1"){
-      l1.choice = var_BIC1(Y.vec.tilde, X.big.tilde, fit.beta$beta, k, NULL)
-      l1.table[iter] = which.min(l1.choice)
-    }
-    else if (criteria == "BIC2"){
-      l1.choice = var_BIC2(Y.vec.tilde, X.big.tilde, fit.beta$beta, k)
-      l1.table[iter] = which.min(l1.choice)
-    }
-    else if (criteria == "BIC3"){
-      l1.choice = var_BIC3(Y.vec.tilde, X.big.tilde, fit.beta$beta, k)
-      l1.table[iter] = which.min(l1.choice)
-    }
-    else if (criteria == "MEBOOT"){
+    # Theta selection
+    if(criteria=='MEBOOT'){
       l1.choice = var_meboot(me.object$Y.vec, me.object$X.block, fit.beta$beta, k)
-      l1.table[iter] = std1.opt(l1.choice, 'right', 1)
+      l1.opt = std1.opt(l1.choice, 'right', 1)
+      l1.table[iter] = l1.opt
+    }else{
+      l1.choice = var_theta(Y.vec.tilde, X.big.tilde, fit.beta$beta, k, criteria, scaling[1])
+      l1.opt = which.min(l1.choice)
+      l1.table[iter] = l1.table[iter]
     }
-    l1.opt = l1.table[iter]
     
-    # step(2)
+    # step(7)
     beta.best = fit.beta$beta[, l1.opt]
-    
     residual.matrix = matrix(Y.vec - X.big %*% beta.best, ncol=k)
     sigma.sample = (1/n) * t(residual.matrix) %*% (residual.matrix)
     
     # step(8)
-    l2.choice=var_omega(sigma.sample, l2.seq, n)
-    
-    fit.omega = glasso(s=sigma.sample, nobs=n, 
-                       rho=l2.seq[which.min(l2.choice)], penalize.diagonal=F)
+    l2.choice=var_omega(sigma.sample, l2.seq, n, scaling[2])
+    l2.opt = which.min(l2.choice)
+    fit.omega = glasso(s=sigma.sample, nobs=n, rho=l2.seq[l2.opt], penalize.diagonal=F)
     
     sigma.best = fit.omega$w
     omega.best = fit.omega$wi
@@ -195,7 +187,7 @@ var.iter.est=function(X.big, Y.vec, k,
     if(verbose){
       cat("iter:", iter, 
           " l1.opt:", l1.seq[l1.opt],
-          " l2.opt:", l2.seq[which.min(l2.choice)], 
+          " l2.opt:", l2.seq[l2.opt], 
           " sparsity:", sum(beta.best!=0)/length(beta.best), 
           " diff.beta:", diff.beta, "\n")
     }
@@ -205,13 +197,47 @@ var.iter.est=function(X.big, Y.vec, k,
   out <- list(beta.est=beta.best, beta.first=beta.first,
               sigma.est=sigma.best, sigma.first=sigma.first, 
               sigma.sample=sigma.sample, 
-              l1s=l1.table, betas.last=fit.beta$beta)
+              l1s=l1.table)
 }
 
 
 ###################
 #### Utilities ####
 ###################
+var_theta=function(Y, X, thetas, k, method, scaling=F){
+  complexity=rep(0, ncol(thetas))
+  fitness=rep(0, ncol(thetas))
+  df=c()
+  ll=c()
+  n=length(Y)/k
+  
+  ## Bayesian Information Criteria
+  if(method=='BIC1'){
+    for(i in 1:ncol(thetas)){
+      df[i]=sum(thetas[, i]!=0)
+      ll[i]= (-1/2) * (n*k*log(2*pi)) + (-1/2) * sum((Y - X %*% as.matrix(thetas[, i]))**2)
+    }
+  } else if (method=='BIC2'){
+    for(i in 1:ncol(thetas)){
+      df[i]=sum(thetas[, i]!=0)
+      ll[i]= (-1/2) * (n*k) * log( sum((Y - X %*% as.matrix(thetas[, i]))**2) / n*k)
+    }
+  } else if(method=='BIC3'){
+    for(i in 1:ncol(thetas)){
+      df[i]=sum(thetas[, i]!=0)
+      ll[i]=sum((Y - X %*% as.matrix(thetas[, i]))**2)
+    }
+  }
+  complexity=df*log(n)
+  fitness=(-2)*ll
+  
+  if(scaling){
+    complexity=scale(complexity)
+    fitness=scale(fitness)
+  }
+  plot.ts(complexity + fitness, ylab='theta')
+  return(complexity + fitness)
+}
 var_meboot=function(Y.boot, X.boot, thetas, k){
   ###################
   # [NOTE]For the generality, Better to random sampled the 
@@ -227,7 +253,7 @@ var_meboot=function(Y.boot, X.boot, thetas, k){
   }
   return(rss)
 }
-var_BIC1=function(Y, X, thetas, k, Omega){
+var_BIC1=function(Y, X, thetas, k, Omega, scaling=T){
   # by definition of BIC | Omega
   # Omega: Fixed in the local loop. (default: ignore)
   # Y, X: Transformed Y & X
@@ -247,8 +273,12 @@ var_BIC1=function(Y, X, thetas, k, Omega){
       ll[i] = (-1/2)*(n*k*log(2*pi)) - (-1/2) * n*log(det(Omega)) + (-1/2) * rss[i]
     }
   }
-  bic = scale((-2)*ll) + scale(df * log(n*k))
-  plot.ts(bic, xlab='Lambda Options', ylab='BIC1')
+  if(scaling){
+    bic = scale((-2)*ll) + scale(df * log(n))
+  } else{
+    bic = (-2)*ll + df * log(n)
+  }
+  #plot.ts(bic, xlab='Lambda Options', ylab='BIC1')
   return(bic)
 }
 var_BIC2=function(Y, X, thetas, k){
@@ -262,7 +292,7 @@ var_BIC2=function(Y, X, thetas, k){
     resid = Y - X %*% as.matrix(thetas[, i])
     rss[i] = sum(resid ** 2)
   }
-  bic = n*k*log(rss/(n*k)) + df*log(n*k)
+  bic = n*k*log(rss/(n*k)) + df*log(n)
   return(bic)
 }
 var_BIC3=function(Y, X, thetas, k){
@@ -276,11 +306,11 @@ var_BIC3=function(Y, X, thetas, k){
     resid = Y - X %*% as.matrix(thetas[, i])
     rss[i] = sum(resid ** 2)
   }
-  bic = scale(rss) + scale(df*log(n*k))
+  bic = 2 * rss + df*log(n)
   #plot(bic)
   return(bic)
 }
-var_omega=function(S, l2s, n){
+var_omega=function(S, l2s, n, scale=F){
   # by definition of BIC | Beta
   bic=c()
   df=c()
@@ -290,9 +320,16 @@ var_omega=function(S, l2s, n){
     fit=glasso(s=S, nobs=n, rho=l2s[i], penalize.diagonal=F)
     df[i]=sum(fit$wi[upper.tri(diag(k))] != 0)
     ll[i] = -(n/2)*log(det(fit$w)) - sum(diag((S*n) %*% fit$wi))
-    bic[i] = -2*ll[i] + df[i]*log(n*k)
   }
-  plot.ts(bic, ylab='Omega selection')
+  if(scale){
+    term1=scale((-2)*ll)
+    term2=scale(df*log(n))
+    bic = ifelse(is.nan(term1), rep(0, length(term1)), term1) + 
+          ifelse(is.nan(term2), rep(0, length(term2)), term2)
+  } else {
+    bic = (-2)*ll + df * log(n)
+  }
+  #plot.ts(bic, ylab='Omega selection')
   return(bic)
 }
 std1.opt=function(vectors, sparse.side='right', nsd=1){

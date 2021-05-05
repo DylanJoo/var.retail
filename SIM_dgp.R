@@ -85,18 +85,18 @@ sigma.sim=function(q, sd.vec){
 }
 
 set.seed(2020)
-beta.star = coef.sim(K, 60/900, c(-0.2, 0.2), rep(-0.4, 30), "SALES")
+beta.star = coef.sim(K, 60/900, c(-0.25, 0.25), rep(-0.5, 30), "SALES")
 set.seed(2019)
-alpha.star = coef.sim(K, 60/900, c(-0.1, 0.1), rep(-0.2, 30), "PZ.REDUCT")
+alpha.star = coef.sim(K, 60/900, c(-0.15, 0.15), rep(-0.3, 30), "PZ.REDUCT")
 set.seed(2018)
-gamma.star = coef.sim(K, 40/900, c(-0.1, 0.1), rep(0.2, 30), "AD.RATE")
+gamma.star = coef.sim(K, 40/900, c(-0.15, 0.15), rep(0.3, 30), "AD.RATE")
 set.seed(2017)
-delta.star = coef.sim(K, 40/900, c(-0.1, 0.1), rep(0.2, 30), "DI.RATE")
+delta.star = coef.sim(K, 40/900, c(-0.15, 0.15), rep(0.3, 30), "DI.RATE")
 theta.star = cbind(beta.star, alpha.star, gamma.star, delta.star)
 set.seed(2016)
-sigma.star.dense = sigma.sim(K, rep(0.3, 30))$dense
-sigma.star.diagonal = sigma.sim(K, rep(0.42, 30))$diagonal
-sigma.star.sparse = sigma.sim(K, rep(0.4, 30))$sparse
+sigma.star.dense = sigma.sim(K, rep(0.2, 30))$dense
+sigma.star.diagonal = sigma.sim(K, rep(0.2, 30))$diagonal
+sigma.star.sparse = sigma.sim(K, rep(0.2, 30))$sparse
 
 save(theta.star, file="data/truth/theta.star.RData")
 save(sigma.star.sparse, file="data/truth/sigma.star.sparse.RData")
@@ -162,11 +162,11 @@ dgp=function(K, time, S, beta, alpha, gamma, delta, Sigma){
     colnames(y) = paste("SALESG", 1:K, sep=".")
     colnames(residual) = paste("Residual", 1:K, sep=".")
     
-    data[[s]] = list(Y=y[(2:time), ], 
+    data[[s]] = list(Y=y[-1, ], 
                      X=cbind(y[(1:time-1), ],
-                             pr.std[(2:time), ], 
-                             ad.std[(2:time), ],
-                             di.std[(2:time), ]),
+                             pr.std[-1, ], 
+                             ad.std[-1, ],
+                             di.std[-1, ]),
                      X.ex=cbind(pr, ad, di),
                      R=residual)
   }
@@ -174,10 +174,55 @@ dgp=function(K, time, S, beta, alpha, gamma, delta, Sigma){
 }
 
 ################################
-# S simulation data of train
+# S simulation data of train/test
 ################################
 set.seed(2020)
-SIM.data=dgp(K, N+N+1, 1000,
+SIM.data=dgp(K, N+N+1, 50,
              beta.star, alpha.star, gamma.star, delta.star,
              sigma.star.sparse)
 save(SIM.data, file='data/SIM.data.lag1.RData')
+
+
+################################
+# Simulation follow wilm's setting
+################################
+N=50
+K=5
+p=2
+q=K*p
+
+b1=diag(0.4, q/p)
+b1[, 1]=0.4
+B1.star=kronecker(diag(p), b1)
+b2=diag(0.2, q/p)
+b2[, 1]=0.2
+B2.star=kronecker(diag(p), b2)
+theta.star=cbind(B1.star, B2.star)
+sigma.star=diag(rep(0.1, q))
+save(theta.star, file='data/truth/theta.star.wilms.RData')
+save(sigma.star, file='data/truth/sigma.star.wilms.RData')
+
+dgp.wilms=function(q, time, S, B1, B2, Sigma){
+  data=list()
+  p=2
+  for(s in 1:S){
+    residual=matrix(0, nrow=time, ncol=q)
+    y=matrix(0, ncol=q, nrow=time)
+    y[1:p, ] = rnorm(q*p)
+
+    for(i in 3:time){
+      residual[i, ]=mvrnorm(n=1, mu=rep(0, q), Sigma)
+      y[i,]=B1%*%y[i-1,] + B2%*%y[i-2,] + matrix(residual[i, ])
+    }
+    
+    colnames(y) = paste("SALESG", 1:q, sep=".")
+    colnames(residual) = paste("Residual", 1:q, sep=".")
+    
+    data[[s]] = list(Y=y[-c(1:p), ], 
+                     X=y[-c(1,time), ],
+                     R=residual)
+  }
+  return(data)
+}
+WILMS.data=dgp.wilms(q, N+N+2, 50, B1.star, B2.star, sigma.star)
+save(WILMS.data, file='data/WILMS.data.RData')

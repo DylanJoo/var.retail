@@ -22,43 +22,81 @@ library(pls)
 detach("package:corrplot", unload = TRUE)
 library(corrplot)
 
-load(file="data/SIM.data.lag1.RData")
-load(file="data/truth/theta.star.RData")
-load(file="data/truth/sigma.star.sparse.RData")
-
-#### Prerequisite meta #### 
-results=c()
-thetas=list()
-sigmas=list()
-
-S=10
-
-simulation=function(s, forecast='naive'){
+simulation=function(s, forecast='naive', DATA=SIM.data, estimate='igls'){
   
   # matrix prepration
-  N=nrow(SIM.data[[s]]$Y)/2 #52
-  K=ncol(SIM.data[[s]]$Y)   #30
-  M=ncol(SIM.data[[s]]$X)
-  nameleft=colnames(SIM.data[[1]]$Y)
-  nameright=colnames(SIM.data[[1]]$X)
+  N=nrow(DATA[[s]]$Y)/2 #52
+  K=ncol(DATA[[s]]$Y)   #30
+  M=ncol(DATA[[s]]$X)
+  nameleft=colnames(DATA[[1]]$Y)
+  nameright=colnames(DATA[[1]]$X)
   
   if(forecast=='naive'){
-    data=matrixPrep(SIM.data[[s]]$Y, SIM.data[[s]]$X, SIM.data[[s]]$R, 1, N)
+    data=matrixPrep(DATA[[s]]$Y, DATA[[s]]$X, DATA[[s]]$R, 1, N)
     Xtrain=kronecker(diag(K), data$Xtrain)
     Ytrain=c(data$Ytrain)
     
     # Estimation
-    fit=var.iter.est(Xtrain, Ytrain, K, 
-                     1/seq(1e3, 1/K, length.out = 100), 
-                     seq(1e-1, 1/K, length.out = 100)**2, 
-                     T, 'BIC1', 'eigen',
-                     10^-2, 10^-1, 10, NA, T, 
-                     list(nameleft, nameright), 'standard', 1)
-    theta=theta.fn(nameleft, nameright, fit$beta.est, K)
-    sigma=theta.fn(nameleft, nameleft, fit$sigma.est, K)
+    if(estimate=='igls'){
+      fit=var.iter.est(Xtrain, Ytrain, K, 
+                       1/seq(1e2, K, length.out = 100), 
+                       1/seq(1e1, K, length.out = 100)**2, 
+                       T, 'BIC2', c(T, T), 'eigen',
+                       10^-2, 10^-1, 10, NA, T, 
+                       list(nameleft, nameright), 'standard', 1)
+      
+      theta=theta.fn(nameleft, nameright, fit$beta.est, K)
+      sigma=theta.fn(nameleft, nameleft, fit$sigma.est, K)
+    
+    } else if (estimate=='ceoptim'){
+      
+      if(length(thetas) >= s){
+        pick = which(thetas[[s]]!=0)
+        fit=CEoptim(f=ols.l0,
+                    f.arg=list(Y=data$Ytrain, X=data$Xtrain, k=0, lambda=0,
+                               warm=T, Theta.igls=rep(1, length(pick))),
+                    continuous = list(mean=c(t(thetas[[s]]))[pick],
+                                      sd=rep(1, length(pick))),
+                    discrete= list(probs=rep(list(c(0.5, 0.5)), length(pick))),
+                    maximize = F, verbose = T, N = 10000,
+                    iterThr = 50, rho = 0.01, noImproveThr = 5)
+        theta=c(t(thetas[[s]]))
+        theta[pick]=fit$optimizer$continuous * fit$optimizer$discrete
+        theta=theta.fn(nameleft, nameright, theta, K)
+        
+      } else {
+        fit=CEoptim(f=ols,
+                    f.arg=list(Y=data$Ytrain, X=data$Xtrain),
+                    continuous = list(mean=rep(0, K*M), sd=rep(0, K*M)),
+                    maximize = F, verbose = T, N = 10000,
+                    iterThr = 50, rho = 0.01, noImproveThr = 5)
+        theta=theta.fn(nameleft, nameright, fit$optimizer$continuous, K)
+      }
+      
+      
+      # fit=CEoptim(f=ols.l0,
+      #             f.arg=list(Y=data$Ytrain, X=data$Xtrain, k=50, lambda=1),
+      #             continuous = list(mean=rep(0, K*M), sd=rep(1, K*M)),
+      #             discrete = list(probs=rep(list(c(0.5, 0.5)), K*M)),
+      #             maximize = F, verbose = T, N = 10000,
+      #             iterThr = 50, rho = 0.01, noImproveThr = 5)
+      # theta.ce=theta.fn(nameleft, nameright, fit$optimizer$continuous * fit$optimizer$discrete, K)
+      # 
+      # fit=CEoptim(f=bic.l0,
+      #             f.arg=list(Y=data$Ytrain, X=data$Xtrain, sep=K*M, k.dim=K),
+      #             continuous = list(mean=rep(0, K*M), sd=rep(1, K*M)),
+      #             discrete = list(probs=rep(list(c(0.5, 0.5)), K*M)),
+      #             maximize = F, verbose = T, N = 10000,
+      #             iterThr = 50, rho = 0.01, noImproveThr = 5)
+      # num=fit$optimizer$continuous * fit$optimizer$discrete 
+      # theta=theta.fn(nameleft, nameright, num, K)
+      sigma=theta.fn(nameleft, nameleft, cov(data$Ytrain-data$Xtrain%*%t(theta)), K)
+    }
+    
     
     # selection/prediction consistent
-    perf=performance(theta.star, theta, K)
+    perf=performance(theta.star[1:nrow(theta), 1:ncol(theta)], theta, K)
+    print(unlist(perf))
     tpr=c(perf$TPR.en, perf$TPR.ex)
     tnr=c(perf$TNR.en, perf$TNR.ex)
     maee=perf$MAEE
@@ -71,7 +109,7 @@ simulation=function(s, forecast='naive'){
   } else if(forecast=='rolling'){
     
     for(i in 1:N){
-      data=matrixPrep(SIM.data[[s]]$Y, SIM.data[[s]]$X, SIM.data[[s]]$R, i, (i+N-1))
+      data=matrixPrep(DATA[[s]]$Y, DATA[[s]]$X, DATA[[s]]$R, i, (i+N-1))
       Xtrain=kronecker(diag(K), data$Xtrain)
       Ytrain=c(data$Ytrain)
 
@@ -84,9 +122,9 @@ simulation=function(s, forecast='naive'){
       
       # Estimation
       fit=var.iter.est(Xtrain, Ytrain, K, 
-                       1/seq(1e3, 1/K, length.out = 100), 
-                       seq(1e-1, 1/K, length.out = 100)**2, 
-                       T, 'BIC1', 'eigen',
+                       seq(1e-3, 1/K, length.out = 100), 
+                       seq(1e-3, 1/K, length.out = 100), 
+                       T, 'BIC2', T, 'eigen',
                        10^-2, 10^-1, 10, NA, F, 
                        list(nameleft, nameright), 'standard', 1)
       
@@ -107,9 +145,6 @@ simulation=function(s, forecast='naive'){
     }
   }
   
-
-  cat('##################\nIteration', s, 'Time', i, '\n########################')
-  
   return(list(theta=theta/N, 
               sigma=sigma/N,
               tpr=tpr/N,
@@ -118,96 +153,118 @@ simulation=function(s, forecast='naive'){
               mafe=mafe/N))
 }
 
+##########################
+# Simulation from RERAIL
+##########################
+results=c()
+results.ce=c()
+thetas=list()
+thetas.ce=list()
+sigmas=list()
+sigmas.ce=list()
+S=10
+load(file="data/SIM.data.lag1.RData")
+load(file="data/truth/theta.star.RData")
+load(file="data/truth/sigma.star.sparse.RData")
+
 for(s in 1:S){
-  sim=simulation(s, forecast='naive')
-  thetas[[s]]=sim$theta
-  sigmas[[s]]=sim$sigma
-  corrplot(sim$theta, is.corr=F)
-  corrplot(sim$sigma, is.corr=F)
-  results=cbind(results, c(sim$tpr, sim$tnr, sim$maee, sim$mafe))
+  cat('##################\nIteration', s, '\n##################\n')
+  cat('===IGLS===\n')
+  # sim=simulation(s, forecast='naive', SIM.data)
+  # thetas[[s]]=sim$theta
+  # sigmas[[s]]=sim$sigma
+  # results=cbind(results, c(sim$tpr, sim$tnr, sim$maee, sim$mafe))
+
+  cat('===CEOPTIM===\n')
+  sim.ce=simulation(s, forecast='naive', SIM.data, estimate='ceoptim')
+  thetas.ce[[s]]=sim.ce$theta
+  sigmas.ce[[s]]=sim.ce$sigma
+  results.ce=cbind(results.ce, c(sim.ce$tpr, sim.ce$tnr, sim.ce$maee, sim.ce$mafe))
 }
 
+##########################
+# Simulation from WILM's
+##########################
+results=c()
+results.ce=c()
+thetas=list()
+thetas.ce=list()
+sigmas=list()
+sigmas.ce=list()
+S=50
+load(file="data/WILMS.data.RData")
+load(file="data/truth/theta.star.wilms.RData")
 
-# Simulation S times with N forecasting
-for(s in 1:S){
-  theta=rep(0, K*ncol(SIM.data[[s]]$X))
-  residual=c()
-  ee=c()
-  tpr=c()
-  tnr=c()
-  for(start in 1:N){
-    
-    #matrix preprocessing
-    Ytrain=data$Ytrain
-    Xtrain=data$Xtrain
-    
-    #1-step ahead forecasting
-    #Ytest=data$Ynext
-    #Xtest=data$Xnext
-    
-    #Naive forecasting
-    Ytest=data$Ytest
-    Xteset=data$Xtest
-    nameleft=colnames(SIM.data[[1]]$Y)
-    nameright=colnames(SIM.data[[1]]$X)
-    
-    #prerequeisit: mebootstrap setting
-    #set.seed(2020)
-    #me.dev.large = meboot.oos(SIM.salesG.cate, SIM.exog.cate, 20, "large")
-    #meboot.view(X.block, me.dev.large$X.blocks)
-    #me.dev.small = meboot.oos(SIM.salesG.cate, SIM.exog.cate, 20, "small")
-    #me.dev.similar = meboot.oos(SIM.salesG.cate, SIM.exog.cate, 20, "similar")
-
-    #model training for start to end
-    fit=var.iter.est(Xtrain, Ytrain, K, 
-                     1/seq(1e3, 1/K, length.out = 100), 
-                     seq(1e-1, 1/K, length.out = 100)**2, 
-                     T, 'BIC1', 'eigen',
-                     10^-2, 10^-1, 10, NA, F, 
-                     list(nameleft, nameright), 'standard', 1)
-    
-    #model evaluation
-    #forecast
-    residual=rbind(residual, abs(Ytest-fit$beta.est %*% as.matrix(Xtest)))
-    ee=rbind(ee, abs(c(t(theta.star))-fit$beta.est))
-    theta=theta+fit$beta.est
-    
-    #consistent
-    perf=performance(theta.star, fit$beta.est, K)
-    tpr=rbind(tpr, c(perf$TPR.en, perf$TPR.ex))
-    tnr=rbind(tnr, c(perf$TNR.en, perf$TNR.ex))
-    cat('Iteration', s, 'Time', (start+N), '\n')
-    
+ols=function(ThetaC, Y, X, warm=F, Theta.igls=NA){
+  if(any(warm==T)){
+    Theta=Theta.igls
+    Theta[which(Theta!=0)]=ThetaC
   }
-  result=cbind(result, c('mafe'=mean(apply(residual, 2, mean)), 
-                         'maee'=mean(apply(ee, 2, mean)),
-                         'tpr.en'=apply(tpr, 2, mean)[1],
-                         'tpr.ex'=apply(tpr, 2, mean)[2],
-                         'tnr.en'=apply(tnr, 2, mean)[1],
-                         'tnr.ex'=apply(tnr, 2, mean)[2]))
-  thetas[[s]] = theta.fn(nameleft, nameright, theta/N, K)
+  Theta = matrix(Theta, nrow=ncol(Y), byrow=T)
+  mse=(1/2)*mean( (Y-X%*%t(Theta))**2 )
+  return(mse)
+}
+ols.l0=function(ThetaC, ThetaZ, Y, X, k, lambda=1, warm=F, Theta.igls=NA){
+  if(any(warm==T)){
+    Theta=Theta.igls
+    Theta[which(Theta!=0)]=ThetaC*ThetaZ
+  }
+  Theta = matrix(Theta, nrow=ncol(Y), byrow=T)
+  mse=mean( (Y-X %*% t(Theta)) ** 2)
+  return((1/2)*mse+lambda*pmax(0, sum(Theta!=0)-k))
+}
+bic=function(C, Y, X, sep, k.dim){
+  Theta = C[1:sep]
+  Theta = matrix(Theta, nrow=ncol(Y), byrow=T)
+  
+  Sigma = diag(C[sep:(sep+k.dim-1)], k.dim)
+  Sigma[upper.tri(Sigma)] = Sigma[lower.tri(Sigma)] = C[-(1:(sep+k.dim-1))]
+  return( nrow(Y) * log(det(Sigma)) + (Y-X %*% t(Theta)) ** 2 + sum(Theta!=0) * log(nrow(Y)))
+}
+bic.l0=function(C, Z, Y, X, sep, k.dim){
+  Theta = C[1:sep]*Z[1:sep]
+  Theta = matrix(Theta, nrow=ncol(Y), byrow=T)
+  resid = Y-X %*% t(Theta)
+  #Sigma = diag(apply(resid, 2, sd))
+  #Sigma[lower.tri(Sigma)] = C[-(1:sep)] * Z[-(1:sep)]
+  #Sigma = Sigma %*% t(Sigma)
+  #return( nrow(Y) * log(det(Sigma)) + sum(resid**2) + sum(Theta!=0) * log(nrow(Y)))
+  #return( sum(resid**2) + sum(Theta!=0) * log(nrow(Y)))
+  return( sum(resid**2) + sum(Theta!=0)*log(nrow(Y)))
 }
 
+
+for(s in 1:S){
+  cat('##################\nIteration', s, '\n##################\n')
+  cat('===IGLS===\n')
+  # sim=simulation(s, forecast='naive', WILMS.data)
+  # thetas[[s]]=sim$theta
+  # sigmas[[s]]=sim$sigma
+  # results=cbind(results, c(sim$tpr, sim$tnr, sim$maee, sim$mafe))
+  
+  cat('===CEOPTIM===\n')
+  sim.ce=simulation(s, forecast='naive', WILMS.data, estimate='ceoptim')
+  thetas.ce[[s]]=sim.ce$theta
+  sigmas.ce[[s]]=sim.ce$sigma
+  results.ce=cbind(results.ce, c(sim.ce$tpr, sim.ce$tnr, sim.ce$maee, sim.ce$mafe))
+}
 
 
 #### (1) Standard estimation on simulation result  #### 
-# Utilize BIC2 for the sparser result 
-# Utilize MEBOOT valdiation error for the finest denser result.
-Y.block=SIM.data[[1]]$Y[, ]
-Y.vec=c(Y.block)
-X.big=kronecker(diag(K), SIM.data[[1]]$X)
+data=matrixPrep(SIM.data[[1]]$Y, SIM.data[[1]]$X, SIM.data[[1]]$R, 1, N)
+Xtrain=kronecker(diag(K), data$Xtrain)
+Ytrain=c(data$Ytrain)
+nameleft=colnames(SIM.data[[1]]$Y)
+nameright=colnames(SIM.data[[1]]$X)
 
-Y.vec=
-X.block.test=cbind(SIM.salesG.cate.test[2:N, ], SIM.exog.cate.test[3:Times, ])
-Y.block.test=SIM.salesG.cate.test[3:Times, ]
-
-fit=var.iter.est(X.big, Y.vec, K, 
-                 1/seq(1e3, 1/K, length.out = 100), 
-                 seq(1e-1, 1/K, length.out = 100)**2, 
-                 T, 'BIC1', 'eigen',
-                 10^-2, 10^-1, 10, NA, T, 
+fit=var.iter.est(Xtrain, Ytrain, K, 
+                 1/seq(1e2, K, length.out = 100), 
+                 1/seq(1e1, K, length.out = 100)**2, 
+                 T, 'BIC2', 'eigen',
+                 10^-2, 10^-1, 10, NA, F, 
                  list(nameleft, nameright), 'standard', 1)
 theta=theta.fn(nameleft, nameright, fit$beta.est, K)
+unlist(performance(theta.star, theta, K))
 
 #### Visualize the theta effct of simulated result
 #########################
@@ -310,7 +367,7 @@ theta.new=c(t(theta))
 theta.new1=theta.new[search.pos]
 
 p=list()
-for(i in 1:length(search.pos)){
+for(i in 1:100){
   p=c(p, list(c(0.5, 0.25, 0.25)))
 }
 
