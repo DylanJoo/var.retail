@@ -51,16 +51,18 @@ simulation=function(s, forecast='naive', DATA=SIM.data, estimate='igls'){
     } else if (estimate=='ceoptim'){
       
       if(length(thetas) >= s){
+        #warm
         pick = which(thetas[[s]]!=0)
         fit=CEoptim(f=ols.l0,
-                    f.arg=list(Y=data$Ytrain, X=data$Xtrain, k=0, lambda=0,
-                               warm=T, Theta.igls=rep(1, length(pick))),
+                    f.arg=list(Y=data$Ytrain, X=data$Xtrain, lambda=0, k=length(pick)/2,
+                               warm=pick, Theta.igls=c(t(thetas[[s]]))),
                     continuous = list(mean=c(t(thetas[[s]]))[pick],
                                       sd=rep(1, length(pick))),
-                    discrete= list(probs=rep(list(c(0.5, 0.5)), length(pick))),
+                    discrete = list(probs=rep(list(c(0.5, 0.5)), length(pick))),
                     maximize = F, verbose = T, N = 10000,
-                    iterThr = 50, rho = 0.01, noImproveThr = 5)
+                    iterThr = 50, rho = 0.1, noImproveThr = 5)
         theta=c(t(thetas[[s]]))
+        #theta[pick]=fit$optimizer$continuous
         theta[pick]=fit$optimizer$continuous * fit$optimizer$discrete
         theta=theta.fn(nameleft, nameright, theta, K)
         
@@ -72,7 +74,6 @@ simulation=function(s, forecast='naive', DATA=SIM.data, estimate='igls'){
                     iterThr = 50, rho = 0.01, noImproveThr = 5)
         theta=theta.fn(nameleft, nameright, fit$optimizer$continuous, K)
       }
-      
       
       # fit=CEoptim(f=ols.l0,
       #             f.arg=list(Y=data$Ytrain, X=data$Xtrain, k=50, lambda=1),
@@ -157,10 +158,11 @@ simulation=function(s, forecast='naive', DATA=SIM.data, estimate='igls'){
 # Simulation from RERAIL
 ##########################
 results=c()
-results.ce=c()
 thetas=list()
-thetas.ce=list()
 sigmas=list()
+
+results.ce=c()
+thetas.ce=list()
 sigmas.ce=list()
 S=10
 load(file="data/SIM.data.lag1.RData")
@@ -207,7 +209,7 @@ ols=function(ThetaC, Y, X, warm=F, Theta.igls=NA){
 ols.l0=function(ThetaC, ThetaZ, Y, X, k, lambda=1, warm=F, Theta.igls=NA){
   if(any(warm==T)){
     Theta=Theta.igls
-    Theta[which(Theta!=0)]=ThetaC*ThetaZ
+    Theta[warm]=ThetaC*ThetaZ
   }
   Theta = matrix(Theta, nrow=ncol(Y), byrow=T)
   mse=mean( (Y-X %*% t(Theta)) ** 2)
